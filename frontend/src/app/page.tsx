@@ -1,8 +1,6 @@
 "use client";
 
 import { useRef, useCallback, useEffect, useState } from "react";
-import Webcam from "react-webcam";
-import { RealtimeVision } from "@overshoot/sdk";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -43,6 +41,133 @@ interface Session {
 }
 
 const API_BASE_URL = "http://localhost:8000";
+
+// ============ WEB SPEECH TRANSCRIPTION HOOK ============
+function useWebSpeechTranscription(roomName: string, sessionStartTime: number) {
+  const [isListening, setIsListening] = useState(false);
+  const [isSupported, setIsSupported] = useState(true);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const segmentStartRef = useRef<number>(0);
+  const shouldRestartRef = useRef(false);
+
+  useEffect(() => {
+    // Check for browser support
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn("⚠️ Web Speech API not supported in this browser");
+      setIsSupported(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      segmentStartRef.current = (Date.now() - sessionStartTime) / 1000;
+      console.log("🎤 Speech recognition started");
+    };
+
+    recognition.onresult = async (event: SpeechRecognitionEvent) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          const text = result[0].transcript.trim();
+          if (text) {
+            const endTime = (Date.now() - sessionStartTime) / 1000;
+            const startTime = segmentStartRef.current;
+
+            // Save transcript to backend
+            try {
+              await fetch(`${API_BASE_URL}/transcripts`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  room_name: roomName,
+                  text: text,
+                  start_time: startTime,
+                  end_time: endTime,
+                  is_final: true,
+                }),
+              });
+              console.log(`📝 Transcript saved: "${text.substring(0, 50)}..."`);
+            } catch (err) {
+              console.warn("⚠️ Failed to save transcript:", err);
+            }
+
+            // Update segment start for next transcript
+            segmentStartRef.current = endTime;
+          }
+        }
+      }
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.warn("Speech recognition error:", event.error);
+      if (event.error === "not-allowed") {
+        console.error("❌ Microphone access denied");
+        setIsListening(false);
+        shouldRestartRef.current = false;
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      // Auto-restart if it should be listening
+      if (shouldRestartRef.current) {
+        try {
+          recognition.start();
+        } catch (e) {
+          // Ignore if already started
+        }
+      }
+    };
+
+    recognitionRef.current = recognition;
+    console.log("✅ Speech recognition initialized");
+
+    return () => {
+      shouldRestartRef.current = false;
+      recognitionRef.current = null;
+      try {
+        recognition.stop();
+      } catch (e) {
+        // Ignore
+      }
+    };
+  }, [roomName, sessionStartTime]);
+
+  const toggleListening = useCallback(() => {
+    console.log("🔘 Toggle clicked, recognitionRef:", !!recognitionRef.current, "isListening:", isListening);
+
+    if (!recognitionRef.current) {
+      console.warn("❌ Recognition not initialized");
+      return;
+    }
+
+    if (isListening) {
+      console.log("⏹️ Stopping recognition...");
+      shouldRestartRef.current = false;
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.warn("Stop error:", e);
+      }
+    } else {
+      console.log("▶️ Starting recognition...");
+      shouldRestartRef.current = true;
+      try {
+        recognitionRef.current.start();
+      } catch (e) {
+        console.warn("Could not start speech recognition:", e);
+      }
+    }
+  }, [isListening]);
+
+  return { isListening, isSupported, toggleListening };
+}
 
 // ============ CLASSROOM VIDEO COMPONENT ============
 function ClassroomVideo() {
@@ -104,6 +229,9 @@ function Classroom({
   const [sessionStart] = useState<number>(Date.now());
   const [sessionId, setSessionId] = useState<string | null>(null);
 
+  // Web Speech API transcription - captures audio via microphone
+  const { isListening, isSupported, toggleListening } = useWebSpeechTranscription(roomName, sessionStart);
+
   // Create session on mount
   useEffect(() => {
     const initSession = async () => {
@@ -154,6 +282,21 @@ function Classroom({
         </div>
       </div>
 
+      {/* Transcription toggle button */}
+      <div className="absolute top-4 right-4 z-10">
+        <button
+          onClick={toggleListening}
+          disabled={!isSupported}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium backdrop-blur-sm cursor-pointer transition-all hover:scale-105 ${
+            isListening
+              ? "bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30"
+              : "bg-zinc-800/80 text-zinc-400 border border-zinc-700 hover:bg-zinc-700/80"
+          } ${!isSupported ? "opacity-50 cursor-not-allowed" : ""}`}
+        >
+          {isListening ? "🎤 Transcribing" : "🎤 Click to start"}
+        </button>
+      </div>
+
       {/* Info badge */}
       <div className="absolute bottom-4 left-4 z-10">
         <div className="px-2 py-1 rounded text-[10px] font-medium bg-zinc-800/90 text-zinc-400 backdrop-blur-sm">
@@ -186,6 +329,7 @@ function WaitingRoom() {
 }
 
 // ============ ATTENTION TRACKER COMPONENT ============
+// Shows webcam preview, uses 'L' key to simulate attention gaps
 function AttentionTracker({
   onDistractionStart,
   onDistractionEnd,
@@ -196,21 +340,8 @@ function AttentionTracker({
   currentSessionTime: number;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const visionRef = useRef<RealtimeVision | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [isFocused, setIsFocused] = useState(true);
-  const [lastResult, setLastResult] = useState<any>(null);
-  const [showDebug, setShowDebug] = useState(false);
   const distractionStartRef = useRef<number | null>(null);
-
-  // Toggle debug with 'd' key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "d") setShowDebug((prev) => !prev);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
   const currentSessionTimeRef = useRef(currentSessionTime);
 
   // Keep session time ref updated
@@ -218,11 +349,10 @@ function AttentionTracker({
     currentSessionTimeRef.current = currentSessionTime;
   }, [currentSessionTime]);
 
-  // Initialize webcam (demo mode - press 'L' to toggle focus)
+  // Initialize webcam
   useEffect(() => {
     const initWebcam = async () => {
       try {
-        // Get user media for webcam preview
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: 320, height: 240 },
           audio: false,
@@ -232,12 +362,8 @@ function AttentionTracker({
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-
-        setIsLoading(false);
-        console.log("📹 Webcam initialized - Press 'L' to simulate looking away");
       } catch (error) {
         console.error("Failed to initialize webcam:", error);
-        setIsLoading(false);
       }
     };
 
@@ -248,17 +374,13 @@ function AttentionTracker({
           const newFocused = !prev;
 
           if (!newFocused && !distractionStartRef.current) {
-            // Started looking away
             distractionStartRef.current = currentSessionTimeRef.current;
             onDistractionStart(currentSessionTimeRef.current);
-            console.log("⚠️ [DEMO] Simulating distraction - looking away");
-            setLastResult({ is_focused: false, confidence: 0.85, reason: "Demo: Looking away" });
+            console.log("⚠️ Distraction started");
           } else if (newFocused && distractionStartRef.current) {
-            // Looking back
             distractionStartRef.current = null;
             onDistractionEnd();
-            console.log("✅ [DEMO] Simulating focus restored - looking back");
-            setLastResult({ is_focused: true, confidence: 0.92, reason: "Demo: Looking at screen" });
+            console.log("✅ Focus restored");
           }
 
           return newFocused;
@@ -279,69 +401,22 @@ function AttentionTracker({
   }, [onDistractionStart, onDistractionEnd]);
 
   return (
-    <div className="relative">
-      {/* Webcam preview */}
-      <div className="absolute bottom-4 right-4 w-32 h-24 rounded-xl overflow-hidden border-2 border-zinc-700 shadow-lg z-10 group">
-        <video
-          ref={videoRef}
-          muted
-          playsInline
-          className="w-full h-full object-cover"
-          style={{ transform: "scaleX(-1)" }}
-        />
-        <div
-          className={`absolute inset-0 transition-colors ${isLoading
-            ? "bg-zinc-900/80"
-            : isFocused
-              ? "bg-emerald-500/10"
-              : "bg-red-500/20"
-            }`}
-        />
-
-        {/* Debug Overlay - Toggle with 'd' */}
-        {showDebug && lastResult && (
-          <div className="absolute inset-0 bg-black/80 p-2 text-[8px] text-green-400 font-mono overflow-auto z-20">
-            <pre>{JSON.stringify(lastResult, null, 2)}</pre>
-          </div>
-        )}
-
-        <div className="absolute bottom-1 left-1/2 -translate-x-1/2">
-          <div
-            className={`w-2 h-2 rounded-full ${isLoading
-              ? "bg-zinc-500"
-              : isFocused
-                ? "bg-emerald-500 shadow-lg shadow-emerald-500/50"
-                : "bg-red-500 animate-pulse shadow-lg shadow-red-500/50"
-              }`}
-          />
-        </div>
-
-      </div>
-
-      {/* Status text */}
-      <div className="absolute top-4 right-4 z-10">
-        <div
-          className={`px-3 py-1.5 rounded-full text-xs font-medium backdrop-blur-sm ${isLoading
-            ? "bg-zinc-800/80 text-zinc-400"
-            : isFocused
-              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-              : "bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse"
-            }`}
-        >
-          {isLoading
-            ? "🔄 Loading Overshoot..."
-            : isFocused
-              ? `👀 Focused (${Math.round((lastResult?.confidence || 0) * 100)}%)`
-              : "⚠️ Look at screen!"}
-        </div>
-      </div>
-
-      {/* Overshoot branding */}
-      <div className="absolute bottom-4 left-4 z-10">
-        <div className="px-2 py-1 rounded text-[10px] font-medium bg-zinc-800/80 text-zinc-500 backdrop-blur-sm">
-          Powered by Overshoot
-        </div>
-      </div>
+    <div className={`absolute bottom-4 right-4 w-32 h-24 rounded-xl overflow-hidden shadow-lg z-10 border-2 transition-colors ${
+      isFocused
+        ? "border-emerald-500 shadow-emerald-500/30"
+        : "border-red-500 shadow-red-500/30"
+    }`}>
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        className="w-full h-full object-cover"
+        style={{ transform: "scaleX(-1)" }}
+      />
+      {/* Overlay that changes color based on focus */}
+      <div className={`absolute inset-0 pointer-events-none transition-colors ${
+        isFocused ? "bg-emerald-500/10" : "bg-red-500/20"
+      }`} />
     </div>
   );
 }

@@ -68,8 +68,13 @@ async def entrypoint(ctx: JobContext):
     Main entrypoint for the transcription agent.
     Joins the classroom room and transcribes teacher audio.
     """
+    # Only handle classroom rooms (not recovery rooms)
+    if ctx.room.name.startswith("recovery-"):
+        logger.info(f"⏭️ Skipping recovery room: {ctx.room.name}")
+        return
+
     logger.info(f"🎤 Transcription agent connecting to room: {ctx.room.name}")
-    
+
     # Connect to the room - subscribe to audio only
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     

@@ -40,7 +40,7 @@ async def shutdown_event():
 # CORS middleware for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -195,15 +195,16 @@ async def start_recovery(request: StartRecoveryRequest):
             "gap_id": request.gap_id,
         })
 
-        # Create room with metadata using RoomService
-        room_service = api.RoomService(livekit_url, api_key, api_secret)
-        await room_service.create_room(
+        # Create room with metadata using LiveKitAPI
+        lk_api = api.LiveKitAPI(livekit_url, api_key, api_secret)
+        await lk_api.room.create_room(
             api.CreateRoomRequest(
                 name=room_name,
                 metadata=metadata,
                 empty_timeout=300,  # 5 minutes
             )
         )
+        await lk_api.aclose()
 
         # Generate token for student
         token = api.AccessToken(api_key, api_secret)
@@ -233,7 +234,7 @@ async def start_recovery(request: StartRecoveryRequest):
 @app.post("/sessions", response_model=SessionResponse)
 async def create_session(request: CreateSessionRequest):
     """Create a new classroom session"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -242,7 +243,7 @@ async def create_session(request: CreateSessionRequest):
             student_identity=request.student_identity,
         )
 
-        result = await db.get_db().sessions.insert_one(session.dict(by_alias=True))
+        result = await db.get_db().sessions.insert_one(session.model_dump(by_alias=True))
         created_session = await db.get_db().sessions.find_one({"_id": result.inserted_id})
 
         return SessionResponse(
@@ -255,13 +256,16 @@ async def create_session(request: CreateSessionRequest):
             total_gaps=created_session.get("total_gaps", 0),
         )
     except Exception as e:
+        import traceback
+        print(f"ERROR creating session: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
 
 
 @app.get("/sessions/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
     """Get a specific session by ID"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     from bson import ObjectId
@@ -286,7 +290,7 @@ async def get_session(session_id: str):
 @app.patch("/sessions/{session_id}/end")
 async def end_session(session_id: str, total_duration: float):
     """Mark a session as ended"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     from bson import ObjectId
@@ -312,7 +316,7 @@ async def end_session(session_id: str, total_duration: float):
 @app.get("/sessions", response_model=List[SessionResponse])
 async def get_all_sessions(limit: int = 50, skip: int = 0):
     """Get all sessions (paginated)"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -339,7 +343,7 @@ async def get_all_sessions(limit: int = 50, skip: int = 0):
 @app.post("/gaps", response_model=GapResponse)
 async def create_gap(request: CreateGapRequest):
     """Create a new attention gap"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     from bson import ObjectId
@@ -351,7 +355,7 @@ async def create_gap(request: CreateGapRequest):
             session_time=request.session_time,
         )
 
-        result = await db.get_db().gaps.insert_one(gap.dict(by_alias=True))
+        result = await db.get_db().gaps.insert_one(gap.model_dump(by_alias=True))
 
         # Update session gap count
         await db.get_db().sessions.update_one(
@@ -376,7 +380,7 @@ async def create_gap(request: CreateGapRequest):
 @app.get("/gaps/session/{session_id}", response_model=List[GapResponse])
 async def get_gaps_for_session(session_id: str):
     """Get all gaps for a specific session"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -400,7 +404,7 @@ async def get_gaps_for_session(session_id: str):
 @app.get("/gaps", response_model=List[GapResponse])
 async def get_all_gaps(limit: int = 100, skip: int = 0):
     """Get all gaps (paginated)"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -426,7 +430,7 @@ async def get_all_gaps(limit: int = 100, skip: int = 0):
 @app.post("/transcripts", response_model=TranscriptResponse)
 async def create_transcript(request: CreateTranscriptRequest):
     """Store a transcript segment from the transcription agent"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -438,7 +442,7 @@ async def create_transcript(request: CreateTranscriptRequest):
             is_final=request.is_final,
         )
 
-        result = await db.get_db().transcripts.insert_one(transcript.dict(by_alias=True))
+        result = await db.get_db().transcripts.insert_one(transcript.model_dump(by_alias=True))
         created = await db.get_db().transcripts.find_one({"_id": result.inserted_id})
 
         return TranscriptResponse(
@@ -451,13 +455,16 @@ async def create_transcript(request: CreateTranscriptRequest):
             created_at=created["created_at"],
         )
     except Exception as e:
+        import traceback
+        print(f"ERROR creating transcript: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to create transcript: {str(e)}")
 
 
 @app.get("/transcripts/room/{room_name}", response_model=List[TranscriptResponse])
 async def get_transcripts_for_room(room_name: str, limit: int = 1000):
     """Get all transcripts for a specific room"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:
@@ -484,7 +491,7 @@ async def get_transcripts_for_room(room_name: str, limit: int = 1000):
 @app.get("/transcripts/range", response_model=List[TranscriptResponse])
 async def get_transcripts_in_range(room_name: str, start_time: float, end_time: float):
     """Get transcripts within a specific time range (for gap recovery)"""
-    if not db.get_db():
+    if db.get_db() is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     try:

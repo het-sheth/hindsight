@@ -20,7 +20,7 @@ from livekit.agents import (
     cli,
 )
 from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import deepgram, openai, silero
+from livekit.plugins import deepgram, openai, silero, elevenlabs
 
 # Load environment variables
 env_path = Path(__file__).parent.parent / ".env.local"
@@ -104,8 +104,13 @@ class HindsightAgent(Agent):
 
 async def entrypoint(ctx: JobContext):
     """Main entrypoint for the Hindsight recovery voice agent."""
+    # Only handle recovery rooms (not classroom rooms)
+    if not ctx.room.name.startswith("recovery-"):
+        logger.info(f"⏭️ Skipping non-recovery room: {ctx.room.name}")
+        return
+
     logger.info(f"🧠 Recovery agent connecting to room: {ctx.room.name}")
-    
+
     # Connect to the room
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     
@@ -143,7 +148,7 @@ async def entrypoint(ctx: JobContext):
             api_key=os.getenv("OPENROUTER_API_KEY"),
             model="google/gemini-2.0-flash-001",
         ),
-        tts=openai.TTS(voice="alloy"),
+        tts=elevenlabs.TTS(api_key=os.getenv("ELEVENLABS_API_KEY")),
         vad=silero.VAD.load(),
     )
     
