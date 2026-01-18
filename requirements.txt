@@ -1,0 +1,31 @@
+# Hindsight Backend & Agent Dependencies
+
+# Backend (FastAPI)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# LiveKit Server SDK (for token generation)
+livekit-api>=0.6.0
+
+# LiveKit Agents Framework
+livekit-agents>=0.8.0
+
+# LiveKit Plugins
+livekit-plugins-deepgram>=0.6.0      # STT
+livekit-plugins-elevenlabs>=0.7.0    # TTS
+livekit-plugins-openai>=0.8.0        # LLM (OpenRouter compatible)
+
+# HTTP client
+httpx>=0.27.0
+aiohttp>=3.9.0
+
+# MongoDB
+motor>=3.3.0                             # Async MongoDB driver
+pymongo>=4.6.0                           # MongoDB sync driver (for Motor)
+dnspython>=2.4.0                         # Required for MongoDB Atlas connection
+
+# Teacher Simulator (YouTube audio)
+yt-dlp>=2024.1.0                         # YouTube audio download
+numpy>=1.26.0                            # Audio processing
