@@ -346,13 +346,47 @@ function AttentionTracker({
   );
 }
 
+// ============ STATS PANEL COMPONENT ============
+function StatsPanel({ gaps, sessionTime }: { gaps: Gap[]; sessionTime: number }) {
+  const totalTimeLost = gaps.reduce((acc, gap) => acc + gap.duration, 0);
+  const avgGapDuration = gaps.length > 0 ? totalTimeLost / gaps.length : 0;
+  const focusPercentage = sessionTime > 0
+    ? Math.max(0, Math.min(100, ((sessionTime - totalTimeLost) / sessionTime) * 100))
+    : 100;
+
+  return (
+    <div className="grid grid-cols-2 gap-2 mb-4">
+      <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
+        <div className="text-2xl font-bold text-amber-400">{gaps.length}</div>
+        <div className="text-xs text-zinc-500">Gaps</div>
+      </div>
+      <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
+        <div className="text-2xl font-bold text-red-400">{totalTimeLost.toFixed(0)}s</div>
+        <div className="text-xs text-zinc-500">Time Lost</div>
+      </div>
+      <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
+        <div className="text-2xl font-bold text-violet-400">{avgGapDuration.toFixed(1)}s</div>
+        <div className="text-xs text-zinc-500">Avg Gap</div>
+      </div>
+      <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/50">
+        <div className={`text-2xl font-bold ${focusPercentage >= 80 ? 'text-emerald-400' : focusPercentage >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+          {focusPercentage.toFixed(0)}%
+        </div>
+        <div className="text-xs text-zinc-500">Focus</div>
+      </div>
+    </div>
+  );
+}
+
 // ============ TIMELINE COMPONENT ============
 function Timeline({
   gaps,
   onGapClick,
+  sessionTime,
 }: {
   gaps: Gap[];
   onGapClick: (gap: Gap) => void;
+  sessionTime: number;
 }) {
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -362,6 +396,8 @@ function Timeline({
 
   return (
     <div className="space-y-3">
+      <StatsPanel gaps={gaps} sessionTime={sessionTime} />
+
       <h2 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
         <span className="text-xl">📚</span> Missed Context
         {gaps.length > 0 && (
@@ -383,8 +419,8 @@ function Timeline({
             <button
               key={gap.id}
               onClick={() => onGapClick(gap)}
-              className="w-full p-3 rounded-xl bg-gradient-to-r from-zinc-900/80 to-zinc-800/50 
-                         border border-zinc-700/50 hover:border-violet-500/50 
+              className="w-full p-3 rounded-xl bg-gradient-to-r from-zinc-900/80 to-zinc-800/50
+                         border border-zinc-700/50 hover:border-violet-500/50
                          transition-all duration-300 hover:shadow-lg hover:shadow-violet-500/10
                          text-left group"
             >
@@ -403,7 +439,7 @@ function Timeline({
                   </div>
                 </div>
                 <span
-                  className="text-xs px-3 py-1.5 rounded-full bg-violet-500/20 text-violet-300 
+                  className="text-xs px-3 py-1.5 rounded-full bg-violet-500/20 text-violet-300
                              group-hover:bg-violet-500/30 transition-colors font-medium"
                 >
                   Ask Hindsight →
@@ -459,17 +495,33 @@ function RecoveryMode({
 
   useEffect(() => {
     if (isOpen && gap) {
-      // Fetch LiveKit token for recovery room
-      fetch(`${API_BASE_URL}/token?room_name=recovery-${gap.id}`)
+      const startTime = gap.sessionTime;
+      const endTime = gap.sessionTime + gap.duration;
+
+      // Start recovery session - creates room with metadata for agent
+      fetch(`${API_BASE_URL}/recovery/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gap_id: gap.id,
+          classroom_room: roomName,
+          gap_start_time: startTime,
+          gap_end_time: endTime,
+        }),
+      })
         .then((res) => res.json())
-        .then((data) => setTokenData(data))
+        .then((data) => {
+          if (data.token && data.url) {
+            setTokenData({ token: data.token, url: data.url });
+            console.log("✅ Recovery room created:", data.room_name);
+          } else {
+            setError(data.detail || "Failed to start recovery");
+          }
+        })
         .catch((err) => setError(err.message));
 
       // Fetch the transcript for the missed time period
       setLoadingTranscript(true);
-      const startTime = gap.sessionTime;
-      const endTime = gap.sessionTime + gap.duration;
-
       fetch(`${API_BASE_URL}/transcripts/range?room_name=${roomName}&start_time=${startTime}&end_time=${endTime}`)
         .then((res) => res.json())
         .then((data) => {
@@ -673,7 +725,7 @@ export default function Home() {
           {/* Timeline Sidebar */}
           <div className="lg:col-span-1">
             <div className="sticky top-8 p-4 rounded-2xl bg-zinc-900/50 border border-zinc-800 backdrop-blur-sm">
-              <Timeline gaps={gaps} onGapClick={handleGapClick} />
+              <Timeline gaps={gaps} onGapClick={handleGapClick} sessionTime={currentSessionTime} />
 
               {/* Room info */}
               <div className="mt-4 pt-4 border-t border-zinc-800">

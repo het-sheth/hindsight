@@ -91,6 +91,19 @@ class CreateTranscriptRequest(BaseModel):
     is_final: bool = True
 
 
+class StartRecoveryRequest(BaseModel):
+    gap_id: str
+    classroom_room: str
+    gap_start_time: float
+    gap_end_time: float
+
+
+class StartRecoveryResponse(BaseModel):
+    token: str
+    url: str
+    room_name: str
+
+
 class TranscriptResponse(BaseModel):
     id: str
     room_name: str
@@ -110,11 +123,11 @@ async def root():
 async def get_token(room_name: str, identity: str = "student-user"):
     """
     Generate a LiveKit access token for the frontend to join a room.
-    
+
     Args:
         room_name: The name of the room to join
         identity: The identity of the participant (default: student-user)
-        
+
     Returns:
         Access token and LiveKit server URL
     """
@@ -123,16 +136,16 @@ async def get_token(room_name: str, identity: str = "student-user"):
         livekit_url = os.getenv("LIVEKIT_URL", "")
         api_key = os.getenv("LIVEKIT_API_KEY", "")
         api_secret = os.getenv("LIVEKIT_API_SECRET", "")
-        
+
         if not api_key or not api_secret:
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail="LiveKit credentials not configured"
             )
-        
+
         # Determine display name based on identity
         display_name = "Teacher" if identity == "teacher" else "Student"
-        
+
         # Create access token
         token = api.AccessToken(api_key, api_secret)
         token.with_identity(identity)
@@ -143,15 +156,76 @@ async def get_token(room_name: str, identity: str = "student-user"):
             can_publish=True,
             can_subscribe=True,
         ))
-        
+
         jwt_token = token.to_jwt()
-        
+
         return TokenResponse(token=jwt_token, url=livekit_url)
-        
+
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
+
+
+@app.post("/recovery/start", response_model=StartRecoveryResponse)
+async def start_recovery(request: StartRecoveryRequest):
+    """
+    Start a recovery session: creates room with metadata and returns token.
+
+    The room metadata contains gap timing info so the agent can fetch
+    the relevant transcript when it joins.
+    """
+    import json
+
+    try:
+        livekit_url = os.getenv("LIVEKIT_URL", "")
+        api_key = os.getenv("LIVEKIT_API_KEY", "")
+        api_secret = os.getenv("LIVEKIT_API_SECRET", "")
+
+        if not api_key or not api_secret:
+            raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
+
+        room_name = f"recovery-{request.gap_id}"
+
+        # Room metadata for the agent
+        metadata = json.dumps({
+            "classroom_room": request.classroom_room,
+            "gap_start_time": request.gap_start_time,
+            "gap_end_time": request.gap_end_time,
+            "gap_id": request.gap_id,
+        })
+
+        # Create room with metadata using RoomService
+        room_service = api.RoomService(livekit_url, api_key, api_secret)
+        await room_service.create_room(
+            api.CreateRoomRequest(
+                name=room_name,
+                metadata=metadata,
+                empty_timeout=300,  # 5 minutes
+            )
+        )
+
+        # Generate token for student
+        token = api.AccessToken(api_key, api_secret)
+        token.with_identity("student-user")
+        token.with_name("Student")
+        token.with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True,
+        ))
+
+        return StartRecoveryResponse(
+            token=token.to_jwt(),
+            url=livekit_url,
+            room_name=room_name,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start recovery: {str(e)}")
 
 
 # ============ SESSION ENDPOINTS ============
